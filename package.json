@@ -1,0 +1,12 @@
+{
+  "name": "askqa-ai-recharge",
+  "version": "1.0.0",
+  "description": "ASKQA AI Recharge — WhatsApp AI bot for India telecom plan comparison",
+  "main": "api/webhook.js",
+  "scripts": {
+    "start": "node api/webhook.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.20.0"
+  }
+}
