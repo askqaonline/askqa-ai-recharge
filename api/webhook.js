@@ -1,94 +1,161 @@
 // ASKQA AI Recharge — WhatsApp Webhook
+// Reads plans and offers from Google Sheet
 const Anthropic = require("@anthropic-ai/sdk");
+const https = require("https");
 
 const client = new Anthropic({
   apiKey: process.env.CLAUDE_API_KEY,
 });
 
-const SYSTEM_PROMPT = `You are ASKQA AI Recharge — a smart assistant that helps Indian mobile users find the best recharge plan on WhatsApp.
+// Get Google Access Token
+async function getGoogleToken() {
+  const serviceAccount = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT);
+  const { createSign } = require("crypto");
+  const header = Buffer.from(JSON.stringify({ alg: "RS256", typ: "JWT" })).toString("base64url");
+  const now = Math.floor(Date.now() / 1000);
+  const claim = Buffer.from(JSON.stringify({
+    iss: serviceAccount.client_email,
+    scope: "https://www.googleapis.com/auth/spreadsheets.readonly",
+    aud: "https://oauth2.googleapis.com/token",
+    exp: now + 3600,
+    iat: now,
+  })).toString("base64url");
+  const sign = createSign("RSA-SHA256");
+  sign.update(`${header}.${claim}`);
+  const signature = sign.sign(serviceAccount.private_key, "base64url");
+  const jwt = `${header}.${claim}.${signature}`;
+
+  return new Promise((resolve, reject) => {
+    const data = `grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer&assertion=${jwt}`;
+    const req = https.request("https://oauth2.googleapis.com/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded", "Content-Length": data.length },
+    }, (res) => {
+      let body = "";
+      res.on("data", (chunk) => (body += chunk));
+      res.on("end", () => resolve(JSON.parse(body).access_token));
+    });
+    req.on("error", reject);
+    req.write(data);
+    req.end();
+  });
+}
+
+// Read data from Google Sheet
+async function readSheet(token, sheetId, range) {
+  const url = `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/${range}`;
+  return new Promise((resolve, reject) => {
+    https.get(url, {
+      headers: { Authorization: `Bearer ${token}` }
+    }, (res) => {
+      let body = "";
+      res.on("data", (chunk) => (body += chunk));
+      res.on("end", () => {
+        const result = JSON.parse(body);
+        resolve(result.values || []);
+      });
+    }).on("error", reject);
+  });
+}
+
+// Get all plans and offers from Google Sheet
+async function getSheetData() {
+  try {
+    const token = await getGoogleToken();
+    const sheetId = process.env.GOOGLE_SHEET_ID;
+    const [plans, offers] = await Promise.all([
+      readSheet(token, sheetId, "Plans!A1:G50"),
+      readSheet(token, sheetId, "Offers!A1:F20"),
+    ]);
+    return { plans, offers };
+  } catch (error) {
+    console.error("Sheet read error:", error.message);
+    return { plans: [], offers: [] };
+  }
+}
+
+// Format sheet data into text for AI
+function formatDataForAI(plans, offers) {
+  let plansText = "CURRENT PLANS FROM DATABASE:\n";
+  if (plans.length > 1) {
+    plans.slice(1).forEach((row) => {
+      if (row[0]) {
+        plansText += `${row[0]} Rs.${row[1]}: ${row[2]}/day, ${row[3]} days, ${row[4]}, Link: ${row[5]}\n`;
+      }
+    });
+  }
+
+  let offersText = "\nCURRENT CASHBACK OFFERS:\n";
+  if (offers.length > 1) {
+    offers.slice(1).forEach((row) => {
+      if (row[0]) {
+        offersText += `${row[0]}: ${row[1]}, Min: ${row[2]}, ${row[3]}, Link: ${row[4]}\n`;
+      }
+    });
+  }
+
+  return plansText + offersText;
+}
+
+// Build system prompt with live data
+function buildSystemPrompt(plansData) {
+  return `You are ASKQA AI Recharge — a smart assistant that helps Indian mobile users find the best and cheapest recharge plan on WhatsApp.
 
 EMOJI RULE: Use emojis ONLY when absolutely necessary. Keep replies clean and simple.
 
-STEP 2 — AFTER LANGUAGE SELECTED:
-Once user selects a language button, ask EXACTLY this in their chosen language:
+OUR MOTTO: Find every rupee the user can save on recharge — even 1 rupee matters. Tell them exactly how.
 
-If English:
-"Please enter your mobile number and network name.
+STEP 1 — LANGUAGE SELECTION (ALWAYS FIRST):
+When user sends ANY first message, reply with EXACTLY this:
+
+"Welcome to ASKQA AI Recharge!
+
+Please select your language:
+1 - English
+2 - தமிழ் (Tamil)
+3 - हिंदी (Hindi)
+
+Reply with 1, 2, or 3"
+
+STEP 2 — AFTER LANGUAGE SELECTED:
+Ask in their chosen language:
+
+English: "Please enter your mobile number and network name.
 Example: 9876543210 Jio"
 
-If Tamil:
-"உங்கள் மொபைல் நம்பர் மற்றும் நெட்வொர்க் பெயரை உள்ளிடவும்.
+Tamil: "உங்கள் மொபைல் நம்பர் மற்றும் நெட்வொர்க் பெயரை உள்ளிடவும்.
 உதாரணம்: 9876543210 Jio"
 
-If Hindi:
-"कृपया अपना मोबाइल नंबर और नेटवर्क नाम दर्ज करें।
+Hindi: "कृपया अपना मोबाइल नंबर और नेटवर्क नाम दर्ज करें।
 उदाहरण: 9876543210 Jio"
 
-STEP 3 — FIND BEST PLANS:
-User sends number and network (example: 9876543210 Jio)
-Immediately show best 3 plans for that network.
-No more questions. Just show plans with recharge links.
+STEP 3 — SHOW BEST PLANS + CHEAPEST WAY TO PAY:
+When user gives number and network — show top 3 plans AND the cheapest payment method.
 
-Format for plans:
-"Best plans for [Network]:
+Format:
+"Best [Network] plans:
 
-1. Rs.[price] — [X]GB/day, [X] days, [OTT or No OTT]
-   Recharge: [link]
+1. Rs.[price] — [X]GB/day, [X] days, [OTT]
+2. Rs.[price] — [X]GB/day, [X] days, [OTT]
+3. Rs.[price] — [X]GB/day, [X] days, [OTT]
 
-2. Rs.[price] — [X]GB/day, [X] days, [OTT or No OTT]
-   Recharge: [link]
+Cheapest way to pay today:
+[Platform] — save Rs.[amount] cashback
+Final price: Rs.[price after cashback]
 
-3. Rs.[price] — [X]GB/day, [X] days, [OTT or No OTT]
-   Recharge: [link]
+Recharge link: [link]"
 
-Best value: Plan 1"
-
-JIO PLANS:
-- Rs.155: 1GB/day, 24 days, No OTT
-- Rs.209: 1.5GB/day, 28 days, No OTT
-- Rs.299: 2GB/day, 28 days, Disney+Hotstar
-- Rs.479: 2.5GB/day, 56 days, Disney+Hotstar
-- Rs.533: 2GB/day, 84 days, No OTT
-- Rs.899: 3GB/day, 84 days, Netflix+Hotstar
-- Rs.3999: 2.5GB/day, 365 days, All OTT
-
-AIRTEL PLANS:
-- Rs.199: 1GB/day, 28 days, No OTT
-- Rs.299: 1.5GB/day, 28 days, Hotstar
-- Rs.359: 2GB/day, 28 days, Hotstar+Amazon Prime
-- Rs.479: 2GB/day, 56 days, Hotstar
-- Rs.599: 2GB/day, 84 days, Hotstar+Amazon Prime
-- Rs.899: 2GB/day, 84 days, Netflix+Hotstar+Amazon Prime
-- Rs.3999: 2GB/day, 365 days, All OTT
-
-VI PLANS:
-- Rs.199: 1GB/day, 28 days, No OTT
-- Rs.299: 1.5GB/day, 28 days, Hotstar
-- Rs.479: 2GB/day, 56 days, Hotstar
-- Rs.799: 2GB/day, 84 days, Hotstar+Amazon Prime
-- Rs.3799: 2GB/day, 365 days, Hotstar
-
-BSNL PLANS:
-- Rs.107: 1GB/day, 30 days, No OTT
-- Rs.197: 2GB/day, 30 days, No OTT
-- Rs.399: 3GB/day, 80 days, No OTT
-- Rs.2399: 2GB/day, 365 days, No OTT
-
-AFFILIATE LINKS:
-- Jio: https://www.jio.com/self-care/plans
-- Airtel: https://www.airtel.in/recharge-online
-- Vi: https://www.myvi.in/recharge
-- BSNL: https://bsnl.in/opencms/jsp/selfcare/index.jsp
+${plansData}
 
 RULES:
-1. Only 2 steps before showing plans
-2. No extra questions
-3. No unnecessary emojis
-4. Keep messages short and clean
-5. Always show recharge link with every plan
-6. Stay in chosen language for entire conversation`;
-
-const userMemory = {};
+1. ALWAYS start with language selection
+2. Only 2 steps before showing plans
+3. ALWAYS show cheapest payment method with cashback
+4. No unnecessary emojis
+5. Stay in chosen language entire conversation
+6. If user asks for specific budget — filter plans by budget
+7. Always show recharge link`;
+}
 
 // Send language selection buttons
 async function sendLanguageButtons(to) {
@@ -99,42 +166,19 @@ async function sendLanguageButtons(to) {
     `https://graph.facebook.com/v24.0/${phoneNumberId}/messages`,
     {
       method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
-      },
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
       body: JSON.stringify({
         messaging_product: "whatsapp",
         to: to,
         type: "interactive",
         interactive: {
           type: "button",
-          body: {
-            text: "Welcome to ASKQA AI Recharge!\n\nSelect your language:"
-          },
+          body: { text: "Welcome to ASKQA AI Recharge!\n\nSelect your language:" },
           action: {
             buttons: [
-              {
-                type: "reply",
-                reply: {
-                  id: "lang_english",
-                  title: "English"
-                }
-              },
-              {
-                type: "reply",
-                reply: {
-                  id: "lang_tamil",
-                  title: "தமிழ்"
-                }
-              },
-              {
-                type: "reply",
-                reply: {
-                  id: "lang_hindi",
-                  title: "हिंदी"
-                }
-              }
+              { type: "reply", reply: { id: "lang_english", title: "English" } },
+              { type: "reply", reply: { id: "lang_tamil", title: "தமிழ்" } },
+              { type: "reply", reply: { id: "lang_hindi", title: "हिंदी" } }
             ]
           }
         }
@@ -142,11 +186,11 @@ async function sendLanguageButtons(to) {
     }
   );
   const result = await response.json();
-  console.log("Button send result:", JSON.stringify(result));
+  console.log("Button result:", JSON.stringify(result));
   return result;
 }
 
-// Send regular text message
+// Send text message
 async function sendWhatsAppMessage(to, message) {
   const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
   const token = process.env.WHATSAPP_TOKEN;
@@ -155,10 +199,7 @@ async function sendWhatsAppMessage(to, message) {
     `https://graph.facebook.com/v24.0/${phoneNumberId}/messages`,
     {
       method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
-      },
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
       body: JSON.stringify({
         messaging_product: "whatsapp",
         to: to,
@@ -172,10 +213,19 @@ async function sendWhatsAppMessage(to, message) {
   return result;
 }
 
+const userMemory = {};
+const newUsers = {};
+
+// Get Claude response with live sheet data
 async function getClaudeResponse(userPhone, userMessage) {
   if (!userMemory[userPhone]) {
     userMemory[userPhone] = [];
   }
+
+  // Get fresh data from Google Sheet
+  const { plans, offers } = await getSheetData();
+  const liveData = formatDataForAI(plans, offers);
+  const systemPrompt = buildSystemPrompt(liveData);
 
   userMemory[userPhone].push({ role: "user", content: userMessage });
 
@@ -186,7 +236,7 @@ async function getClaudeResponse(userPhone, userMessage) {
   const response = await client.messages.create({
     model: "claude-haiku-4-5-20251001",
     max_tokens: 1000,
-    system: SYSTEM_PROMPT,
+    system: systemPrompt,
     messages: userMemory[userPhone],
   });
 
@@ -195,17 +245,12 @@ async function getClaudeResponse(userPhone, userMessage) {
   return aiReply;
 }
 
-// Track new users
-const newUsers = {};
-
 module.exports = async (req, res) => {
   if (req.method === "GET") {
     const mode = req.query["hub.mode"];
     const token = req.query["hub.verify_token"];
     const challenge = req.query["hub.challenge"];
-
     if (mode === "subscribe" && token === process.env.VERIFY_TOKEN) {
-      console.log("Webhook verified!");
       return res.status(200).send(challenge);
     }
     return res.status(403).send("Forbidden");
@@ -221,26 +266,14 @@ module.exports = async (req, res) => {
           for (const change of entry.changes) {
             const value = change.value;
 
-            // Handle regular text messages
             if (value.messages && value.messages.length > 0) {
               const message = value.messages[0];
               const from = message.from;
 
-              // Handle button reply (language selection)
+              // Handle button reply
               if (message.type === "interactive" && message.interactive.type === "button_reply") {
-                const buttonId = message.interactive.button_reply.id;
                 const buttonTitle = message.interactive.button_reply.title;
-
-                console.log(`Button selected by ${from}: ${buttonId}`);
-
-                // Mark language as selected
-                newUsers[from] = buttonId;
-
-                // Add to memory
-                if (!userMemory[from]) userMemory[from] = [];
-                userMemory[from].push({ role: "user", content: `I selected language: ${buttonTitle}` });
-
-                // Get Claude response
+                newUsers[from] = "selected";
                 const aiReply = await getClaudeResponse(from, `I selected language: ${buttonTitle}`);
                 await sendWhatsAppMessage(from, aiReply);
 
@@ -248,12 +281,11 @@ module.exports = async (req, res) => {
                 const msgText = message.text.body;
                 console.log(`Message from ${from}: ${msgText}`);
 
-                // New user — send language buttons first
+                // New user — send language buttons
                 if (!newUsers[from] && !userMemory[from]) {
                   await sendLanguageButtons(from);
                   newUsers[from] = "pending";
                 } else {
-                  // Existing user — get AI response
                   const aiReply = await getClaudeResponse(from, msgText);
                   await sendWhatsAppMessage(from, aiReply);
                 }
