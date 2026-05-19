@@ -4,12 +4,38 @@
     {
       "src": "api/webhook.js",
       "use": "@vercel/node"
+    },
+    {
+      "src": "api/scrape-plans.js",
+      "use": "@vercel/node"
+    },
+    {
+      "src": "api/scrape-offers.js",
+      "use": "@vercel/node"
     }
   ],
   "routes": [
     {
       "src": "/webhook",
       "dest": "/api/webhook.js"
+    },
+    {
+      "src": "/scrape-plans",
+      "dest": "/api/scrape-plans.js"
+    },
+    {
+      "src": "/scrape-offers",
+      "dest": "/api/scrape-offers.js"
+    }
+  ],
+  "crons": [
+    {
+      "path": "/scrape-plans",
+      "schedule": "0 0 * * 0"
+    },
+    {
+      "path": "/scrape-offers",
+      "schedule": "0 0 * * *"
     }
   ]
 }
