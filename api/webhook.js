@@ -5,15 +5,43 @@ const client = new Anthropic({
   apiKey: process.env.CLAUDE_API_KEY,
 });
 
-const SYSTEM_PROMPT = `You are ASKQA AI Recharge — a smart, friendly AI assistant that helps Indian mobile users find the best recharge plan instantly on WhatsApp.
+const SYSTEM_PROMPT = `You are ASKQA AI Recharge — a smart assistant that helps Indian mobile users find the best recharge plan on WhatsApp.
 
-You support English, Tamil, and Hindi. ALWAYS reply in the same language the user writes in.
+EMOJI RULE: Use emojis ONLY when absolutely necessary. Keep replies clean and simple.
 
-OPERATOR DETECTION FROM NUMBER PREFIX:
-- Jio: starts with 6, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79
-- Airtel: starts with 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 98, 99
-- Vi: starts with 94, 95, 96
-- BSNL: starts with 94, 95
+STEP 2 — AFTER LANGUAGE SELECTED:
+Once user selects a language button, ask EXACTLY this in their chosen language:
+
+If English:
+"Please enter your mobile number and network name.
+Example: 9876543210 Jio"
+
+If Tamil:
+"உங்கள் மொபைல் நம்பர் மற்றும் நெட்வொர்க் பெயரை உள்ளிடவும்.
+உதாரணம்: 9876543210 Jio"
+
+If Hindi:
+"कृपया अपना मोबाइल नंबर और नेटवर्क नाम दर्ज करें।
+उदाहरण: 9876543210 Jio"
+
+STEP 3 — FIND BEST PLANS:
+User sends number and network (example: 9876543210 Jio)
+Immediately show best 3 plans for that network.
+No more questions. Just show plans with recharge links.
+
+Format for plans:
+"Best plans for [Network]:
+
+1. Rs.[price] — [X]GB/day, [X] days, [OTT or No OTT]
+   Recharge: [link]
+
+2. Rs.[price] — [X]GB/day, [X] days, [OTT or No OTT]
+   Recharge: [link]
+
+3. Rs.[price] — [X]GB/day, [X] days, [OTT or No OTT]
+   Recharge: [link]
+
+Best value: Plan 1"
 
 JIO PLANS:
 - Rs.155: 1GB/day, 24 days, No OTT
@@ -46,14 +74,6 @@ BSNL PLANS:
 - Rs.399: 3GB/day, 80 days, No OTT
 - Rs.2399: 2GB/day, 365 days, No OTT
 
-CONVERSATION FLOW:
-Step 1 - Greeting: Ask for mobile number
-Step 2 - Detect operator from number prefix, confirm with user
-Step 3 - Ask budget (Under Rs.200 / Rs.200-300 / Rs.300-500 / Above Rs.500)
-Step 4 - Ask OTT needed and data usage (Light/Medium/Heavy)
-Step 5 - Recommend top 3 plans with recharge links
-Step 6 - Save preferences, mention expiry reminder
-
 AFFILIATE LINKS:
 - Jio: https://www.jio.com/self-care/plans
 - Airtel: https://www.airtel.in/recharge-online
@@ -61,15 +81,72 @@ AFFILIATE LINKS:
 - BSNL: https://bsnl.in/opencms/jsp/selfcare/index.jsp
 
 RULES:
-1. Never give wrong plan info
-2. Never recommend plan outside budget
-3. Always confirm operator first
-4. Always include recharge link
-5. Reply in same language as user (Tamil/Hindi/English)
-6. Keep messages short and friendly`;
+1. Only 2 steps before showing plans
+2. No extra questions
+3. No unnecessary emojis
+4. Keep messages short and clean
+5. Always show recharge link with every plan
+6. Stay in chosen language for entire conversation`;
 
 const userMemory = {};
 
+// Send language selection buttons
+async function sendLanguageButtons(to) {
+  const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
+  const token = process.env.WHATSAPP_TOKEN;
+
+  const response = await fetch(
+    `https://graph.facebook.com/v24.0/${phoneNumberId}/messages`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        messaging_product: "whatsapp",
+        to: to,
+        type: "interactive",
+        interactive: {
+          type: "button",
+          body: {
+            text: "Welcome to ASKQA AI Recharge!\n\nSelect your language:"
+          },
+          action: {
+            buttons: [
+              {
+                type: "reply",
+                reply: {
+                  id: "lang_english",
+                  title: "English"
+                }
+              },
+              {
+                type: "reply",
+                reply: {
+                  id: "lang_tamil",
+                  title: "தமிழ்"
+                }
+              },
+              {
+                type: "reply",
+                reply: {
+                  id: "lang_hindi",
+                  title: "हिंदी"
+                }
+              }
+            ]
+          }
+        }
+      }),
+    }
+  );
+  const result = await response.json();
+  console.log("Button send result:", JSON.stringify(result));
+  return result;
+}
+
+// Send regular text message
 async function sendWhatsAppMessage(to, message) {
   const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
   const token = process.env.WHATSAPP_TOKEN;
@@ -118,6 +195,9 @@ async function getClaudeResponse(userPhone, userMessage) {
   return aiReply;
 }
 
+// Track new users
+const newUsers = {};
+
 module.exports = async (req, res) => {
   if (req.method === "GET") {
     const mode = req.query["hub.mode"];
@@ -141,16 +221,42 @@ module.exports = async (req, res) => {
           for (const change of entry.changes) {
             const value = change.value;
 
+            // Handle regular text messages
             if (value.messages && value.messages.length > 0) {
               const message = value.messages[0];
               const from = message.from;
-              const msgText = message.type === "text" ? message.text.body : null;
 
-              if (msgText) {
-                console.log(`Message from ${from}: ${msgText}`);
-                const aiReply = await getClaudeResponse(from, msgText);
+              // Handle button reply (language selection)
+              if (message.type === "interactive" && message.interactive.type === "button_reply") {
+                const buttonId = message.interactive.button_reply.id;
+                const buttonTitle = message.interactive.button_reply.title;
+
+                console.log(`Button selected by ${from}: ${buttonId}`);
+
+                // Mark language as selected
+                newUsers[from] = buttonId;
+
+                // Add to memory
+                if (!userMemory[from]) userMemory[from] = [];
+                userMemory[from].push({ role: "user", content: `I selected language: ${buttonTitle}` });
+
+                // Get Claude response
+                const aiReply = await getClaudeResponse(from, `I selected language: ${buttonTitle}`);
                 await sendWhatsAppMessage(from, aiReply);
-                console.log(`Replied to ${from}`);
+
+              } else if (message.type === "text") {
+                const msgText = message.text.body;
+                console.log(`Message from ${from}: ${msgText}`);
+
+                // New user — send language buttons first
+                if (!newUsers[from] && !userMemory[from]) {
+                  await sendLanguageButtons(from);
+                  newUsers[from] = "pending";
+                } else {
+                  // Existing user — get AI response
+                  const aiReply = await getClaudeResponse(from, msgText);
+                  await sendWhatsAppMessage(from, aiReply);
+                }
               }
             }
           }
