@@ -351,10 +351,6 @@ function removeDuplicates(plans) {
 
 }
 
-// ============================================
-// COLLECT ALL PLANS
-// ============================================
-
 async function collectAllPlans() {
 
   const header = [[
@@ -367,16 +363,54 @@ async function collectAllPlans() {
     "Updated"
   ]];
 
-  const jio = await fetchJioPlans();
+  let jio = [];
+  let airtel = [];
+  let vi = [];
+  let bsnl = [];
 
-  const airtel =
-    await fetchAirtelPlans();
+  try {
 
-  const vi =
-    await fetchViPlans();
+    console.log("Fetching Jio...");
+    jio = await fetchJioPlans();
 
-  const bsnl =
-    await fetchBSNLPlans();
+  } catch (e) {
+
+    console.log("Jio failed:", e.message);
+
+  }
+
+  try {
+
+    console.log("Fetching Airtel...");
+    airtel = await fetchAirtelPlans();
+
+  } catch (e) {
+
+    console.log("Airtel failed:", e.message);
+
+  }
+
+  try {
+
+    console.log("Fetching Vi...");
+    vi = await fetchViPlans();
+
+  } catch (e) {
+
+    console.log("Vi failed:", e.message);
+
+  }
+
+  try {
+
+    console.log("Fetching BSNL...");
+    bsnl = await fetchBSNLPlans();
+
+  } catch (e) {
+
+    console.log("BSNL failed:", e.message);
+
+  }
 
   let allPlans = [
     ...jio,
