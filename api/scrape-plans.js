@@ -401,47 +401,19 @@ async function collectAllPlans() {
 
 module.exports = async (req, res) => {
 
-  if (
-    req.headers.authorization !==
-    `Bearer ${process.env.CRON_SECRET}`
-  ) {
-
-    return res.status(401).json({
-      error: "Unauthorized"
-    });
-
-  }
-
   try {
 
-    console.log(
-      "Starting plan update..."
-    );
-
-    const token =
-      await getGoogleToken();
+    console.log("Starting scraper test...");
 
     const plans =
       await collectAllPlans();
 
-    const sheetId =
-      process.env.GOOGLE_SHEET_ID;
-
-    await writeToSheet(
-      token,
-      sheetId,
-      "Plans!A1",
-      plans
-    );
-
-    console.log(
-      `Updated ${plans.length - 1} plans`
-    );
+    console.log(plans);
 
     return res.status(200).json({
       success: true,
-      plans_updated:
-        plans.length - 1
+      total_plans: plans.length - 1,
+      sample: plans.slice(0, 20)
     });
 
   } catch (error) {
