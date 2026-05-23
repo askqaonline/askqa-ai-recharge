@@ -102,20 +102,23 @@ async function getSmartPlans(operator) {
       }
     };
 
-    // 1. Cheapest price — minimum 28 days validity
-    pickBest((a, b) => getPrice(a) - getPrice(b), p => getDays(p) >= 28);
+    // Plan 1 — Cheapest total price (28-30 days)
+    pickBest((a, b) => getPrice(a) - getPrice(b), p => getDays(p) >= 28 && getDays(p) <= 35);
 
-    // 2. Best daily data (daily plans only, min 28 days)
-    pickBest((a, b) => getDataVal(b) - getDataVal(a), p => isDaily(p) && getDays(p) >= 28);
+    // Plan 2 — Cheapest daily data plan (28-30 days)
+    pickBest((a, b) => getPrice(a) - getPrice(b), p => isDaily(p) && getDays(p) >= 28 && getDays(p) <= 35);
 
-    // 3. Best value — cheapest per day (min 28 days)
-    pickBest((a, b) => getPricePerDay(a) - getPricePerDay(b), p => getDays(p) >= 28);
+    // Plan 3 — Better daily data than plan 2 (28-30 days, more data)
+    pickBest((a, b) => getDataVal(b) - getDataVal(a), p => isDaily(p) && getDays(p) >= 28 && getDays(p) <= 35);
 
-    // 4. Longest validity
-    pickBest((a, b) => getDays(b) - getDays(a));
+    // Plan 4 — Long validity light data (84-90 days), cheapest per day
+    pickBest((a, b) => getPricePerDay(a) - getPricePerDay(b), p => getDays(p) >= 84 && getDays(p) <= 95);
 
-    // 5. Best OTT plan (min 28 days)
-    pickBest((a, b) => getPrice(a) - getPrice(b), p => hasOTT(p) && getDays(p) >= 28);
+    // Plan 5 — Long validity better data (180+ days)
+    pickBest((a, b) => getPricePerDay(a) - getPricePerDay(b), p => getDays(p) >= 180);
+
+    // Plan 6 — Operator special — cheapest per day overall (any validity)
+    pickBest((a, b) => getPricePerDay(a) - getPricePerDay(b));
 
     return selected;
   } catch (error) {
@@ -134,9 +137,16 @@ function formatSmartPlans(plans, operator, language, rechargeLink) {
       : `Sorry. ${operator} plans not available now.`;
   }
 
+  const specialLabel = {
+    "Jio": { en: "Jio Special (AI+5G)", ta: "ஜியோ ஸ்பெஷல் (AI+5G)" },
+    "Airtel": { en: "Airtel Special (Thanks)", ta: "ஏர்டெல் ஸ்பெஷல் (Thanks)" },
+    "Vi": { en: "Vi Special (Weekend Data)", ta: "வி ஸ்பெஷல் (வீக்எண்ட்)" },
+    "BSNL": { en: "BSNL Special (Best Value)", ta: "பிஎஸ்என்எல் ஸ்பெஷல்" },
+  };
+  const sp = specialLabel[operator] || { en: "Best Value", ta: "சிறந்த மதிப்பு" };
   const labels = {
-    english: ["Cheapest", "Best Daily Data", "Best Value/Day", "Longest Validity", "Best OTT"],
-    tamil: ["மிகவும் குறைவான விலை", "அதிக தினசரி டேட்டா", "நாளைக்கு சிறந்த மதிப்பு", "நீண்ட செல்லுபடி", "சிறந்த OTT"]
+    english: ["Budget Pick", "Daily Data", "More Data", "3 Month Plan", "Long Term", sp.en],
+    tamil: ["மலிவான திட்டம்", "தினசரி டேட்டா", "அதிக டேட்டா", "3 மாத திட்டம்", "நீண்ட காலம்", sp.ta]
   };
 
   const lang = language === "tamil" ? "tamil" : "english";
@@ -166,7 +176,9 @@ function formatSmartPlans(plans, operator, language, rechargeLink) {
 
     const label = labels[lang][i] || "";
 
+    const planLabel = labels[lang][i] || "";
     msg += `${i + 1}. *Rs.${price}* — ${dataLabel} | ${validity}\n`;
+    if (planLabel) msg += `   _(${planLabel})_\n`;
     if (benefits && benefits !== "No OTT" && benefits !== "") msg += `   OTT: ${benefits}\n`;
     if (is5g === "Yes") msg += `   5G: ${language === "tamil" ? "உண்டு ✓" : "Yes ✓"}\n`;
     if (pricePerDay) msg += `   ${language === "tamil" ? "நாளுக்கு" : "Per day"}: ${pricePerDay}\n`;
