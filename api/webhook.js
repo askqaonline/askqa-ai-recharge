@@ -1,11 +1,9 @@
-// ASKQA AI Recharge — WhatsApp Webhook
-// Complete flow: Language → Number → Preference → Plans
+// ASKQA Recharge — Complete WhatsApp Webhook
+// Flow: Language → Operator → Number → Smart 5 Plans → Natural language
 const Anthropic = require("@anthropic-ai/sdk");
 const https = require("https");
 
-const client = new Anthropic({
-  apiKey: process.env.CLAUDE_API_KEY,
-});
+const client = new Anthropic({ apiKey: process.env.CLAUDE_API_KEY });
 
 // ============================================
 // GOOGLE TOKEN
@@ -49,106 +47,102 @@ async function getGoogleToken() {
 async function readSheet(token, sheetId, range) {
   const url = `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/${range}`;
   return new Promise((resolve, reject) => {
-    https.get(url, {
-      headers: { Authorization: `Bearer ${token}` }
-    }, (res) => {
+    https.get(url, { headers: { Authorization: `Bearer ${token}` } }, (res) => {
       let body = "";
       res.on("data", chunk => body += chunk);
-      res.on("end", () => {
-        const result = JSON.parse(body);
-        resolve(result.values || []);
-      });
+      res.on("end", () => resolve(JSON.parse(body).values || []));
     }).on("error", reject);
   });
 }
 
 // ============================================
-// DETECT OPERATOR FROM NUMBER
+// GET SMART 5 PLANS
 // ============================================
-function detectOperator(mobile) {
-  const num = mobile.replace(/\D/g, "").slice(-10);
-  const prefix2 = parseInt(num.substring(0, 2));
-  const prefix3 = parseInt(num.substring(0, 3));
-  const prefix4 = parseInt(num.substring(0, 4));
-
-  // Jio prefixes
-  const jioPrefixes = [70, 71, 72, 73, 74, 75, 76, 77, 78, 79];
-  if (num[0] === "6") return "Jio";
-  if (jioPrefixes.includes(prefix2)) return "Jio";
-
-  // Airtel prefixes
-  const airtelPrefixes = [80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 98, 99];
-  if (airtelPrefixes.includes(prefix2)) return "Airtel";
-
-  // Vi prefixes
-  const viPrefixes = [90, 91, 92, 93, 94, 95, 96, 97];
-  if (viPrefixes.includes(prefix2)) return "Vi";
-
-  // BSNL
-  const bsnlPrefixes = [94, 95];
-  if (bsnlPrefixes.includes(prefix2)) return "BSNL";
-
-  return "Unknown";
-}
-
-// ============================================
-// GET PLANS FROM SHEET
-// ============================================
-async function getPlansFromSheet(operator, preference) {
+async function getSmartPlans(operator) {
   try {
     const token = await getGoogleToken();
     const sheetId = process.env.GOOGLE_SHEET_ID;
     const rows = await readSheet(token, sheetId, "Plans!A1:I500");
-
     if (rows.length < 2) return [];
 
     // Filter by operator
-    let plans = rows.slice(1).filter(row => 
+    let plans = rows.slice(1).filter(row =>
       row[0] && row[0].toLowerCase() === operator.toLowerCase()
     );
 
-    // Sort by preference
-    if (preference === "low_cost") {
-      plans.sort((a, b) => parseFloat(a[1]) - parseFloat(b[1]));
-    } else if (preference === "more_data") {
-      plans.sort((a, b) => {
-        const dataA = parseFloat(a[2]) || 0;
-        const dataB = parseFloat(b[2]) || 0;
-        return dataB - dataA;
-      });
-    } else if (preference === "long_validity") {
-      plans.sort((a, b) => {
-        const daysA = parseInt(a[3]) || 0;
-        const daysB = parseInt(b[3]) || 0;
-        return daysB - daysA;
-      });
-    }
+    if (plans.length === 0) return [];
 
-    return plans.slice(0, 3);
+    // Helper functions
+    const getPrice = p => parseFloat(p[1]) || 999999;
+    const getPricePerDay = p => parseFloat((p[6] || "").replace("Rs.", "")) || 999999;
+    const getDataVal = p => {
+      const str = p[2] || "";
+      const match = str.match(/[\d.]+/);
+      return match ? parseFloat(match[0]) : 0;
+    };
+    const getDays = p => {
+      const str = p[3] || "";
+      const match = str.match(/\d+/);
+      return match ? parseInt(match[0]) : 0;
+    };
+    const hasOTT = p => p[4] && p[4] !== "No OTT" && p[4] !== "";
+    const isDaily = p => (p[2] || "").includes("/day") || (p[2] || "").toLowerCase().includes("day");
+
+    // Pick 5 smart plans — one from each category
+    const selected = [];
+    const usedPrices = new Set();
+
+    const pickBest = (sortFn, filterFn = null) => {
+      let pool = filterFn ? plans.filter(filterFn) : plans;
+      pool = pool.filter(p => !usedPrices.has(p[1]));
+      pool.sort(sortFn);
+      if (pool.length > 0) {
+        selected.push(pool[0]);
+        usedPrices.add(pool[0][1]);
+      }
+    };
+
+    // 1. Cheapest price
+    pickBest((a, b) => getPrice(a) - getPrice(b));
+
+    // 2. Best daily data (daily plans only)
+    pickBest((a, b) => getDataVal(b) - getDataVal(a), p => isDaily(p));
+
+    // 3. Best value — cheapest per day
+    pickBest((a, b) => getPricePerDay(a) - getPricePerDay(b));
+
+    // 4. Longest validity
+    pickBest((a, b) => getDays(b) - getDays(a));
+
+    // 5. Best OTT plan
+    pickBest((a, b) => getPrice(a) - getPrice(b), p => hasOTT(p));
+
+    return selected;
   } catch (error) {
-    console.error("Sheet read error:", error.message);
+    console.error("Sheet error:", error.message);
     return [];
   }
 }
 
 // ============================================
-// FORMAT PLANS FOR WHATSAPP
+// FORMAT SMART 5 PLANS
 // ============================================
-function formatPlans(plans, operator, language, rechargeLink) {
+function formatSmartPlans(plans, operator, language, rechargeLink) {
   if (plans.length === 0) {
-    if (language === "tamil") {
-      return `மன்னிக்கவும், ${operator} திட்டங்கள் இப்போது கிடைக்கவில்லை.`;
-    }
-    return `Sorry, ${operator} plans not available right now.`;
+    return language === "tamil"
+      ? `மன்னிக்கவும். ${operator} திட்டங்கள் இல்லை.`
+      : `Sorry. ${operator} plans not available now.`;
   }
 
-  let msg = "";
-  
-  if (language === "tamil") {
-    msg = `${operator} சிறந்த திட்டங்கள்:\n\n`;
-  } else {
-    msg = `Best ${operator} plans:\n\n`;
-  }
+  const labels = {
+    english: ["Cheapest", "Best Daily Data", "Best Value/Day", "Longest Validity", "Best OTT"],
+    tamil: ["மிகவும் குறைவான விலை", "அதிக தினசரி டேட்டா", "நாளைக்கு சிறந்த மதிப்பு", "நீண்ட செல்லுபடி", "சிறந்த OTT"]
+  };
+
+  const lang = language === "tamil" ? "tamil" : "english";
+  let msg = language === "tamil"
+    ? `*${operator} சிறந்த திட்டங்கள்:*\n\n`
+    : `*Best ${operator} Plans:*\n\n`;
 
   plans.forEach((plan, i) => {
     const price = plan[1] || "";
@@ -158,24 +152,33 @@ function formatPlans(plans, operator, language, rechargeLink) {
     const is5g = plan[5] || "";
     const pricePerDay = plan[6] || "";
 
+    // Format data label
+    let dataLabel = data;
     if (language === "tamil") {
-      msg += `${i + 1}. Rs.${price} — ${data}, ${validity}\n`;
-      if (benefits && benefits !== "No OTT") msg += `   OTT: ${benefits}\n`;
-      if (is5g === "Yes") msg += `   5G: உண்டு\n`;
-      if (pricePerDay) msg += `   நாள் கட்டணம்: ${pricePerDay}\n`;
-    } else {
-      msg += `${i + 1}. Rs.${price} — ${data}, ${validity}\n`;
-      if (benefits && benefits !== "No OTT") msg += `   OTT: ${benefits}\n`;
-      if (is5g === "Yes") msg += `   5G: Yes\n`;
-      if (pricePerDay) msg += `   Per day: ${pricePerDay}\n`;
+      if (data.includes("/day")) {
+        dataLabel = data.replace("/day", " ஒரு நாளைக்கு");
+      } else if (data.includes("total")) {
+        dataLabel = data.replace("total", "மொத்தமும்");
+      } else if (data.toLowerCase().includes("unlimited")) {
+        dataLabel = "அளவற்ற டேட்டா";
+      }
     }
+
+    const label = labels[lang][i] || "";
+
+    msg += `${i + 1}. *Rs.${price}* — ${dataLabel} | ${validity}\n`;
+    if (benefits && benefits !== "No OTT" && benefits !== "") msg += `   OTT: ${benefits}\n`;
+    if (is5g === "Yes") msg += `   5G: ${language === "tamil" ? "உண்டு ✓" : "Yes ✓"}\n`;
+    if (pricePerDay) msg += `   ${language === "tamil" ? "நாளுக்கு" : "Per day"}: ${pricePerDay}\n`;
     msg += "\n";
   });
 
   if (language === "tamil") {
-    msg += `ரீசார்ஜ்: ${rechargeLink}`;
+    msg += `ரீசார்ஜ் செய்ய: ${rechargeLink}\n\n`;
+    msg += `உங்களுக்கு பிடித்த திட்டத்தின் தொகையை தட்டச்சு செய்யுங்கள்.\nஉதாரணம்: 299\n\nஅல்லது உங்களுக்கு என்ன மாதிரி ரீசார்ஜ் வேண்டும் என்று சொன்னால் நான் காண்பிப்பேன்!`;
   } else {
-    msg += `Recharge: ${rechargeLink}`;
+    msg += `Recharge at: ${rechargeLink}\n\n`;
+    msg += `Type the amount you want.\nExample: 299\n\nOr tell me what kind of plan you need and I will find it!`;
   }
 
   return msg;
@@ -191,16 +194,56 @@ function getRechargeLink(operator) {
     "Vi": "https://www.myvi.in/recharge",
     "BSNL": "https://bsnl.in/opencms/jsp/selfcare/index.jsp"
   };
-  return links[operator] || "https://www.google.com/search?q=" + operator + "+recharge";
+  return links[operator] || "https://www.jio.com/self-care/plans";
 }
 
 // ============================================
-// SEND WHATSAPP TEXT MESSAGE
+// CLAUDE AI — HANDLE NATURAL LANGUAGE
+// ============================================
+async function getClaudeResponse(userMessage, operator, language, plans) {
+  const plansText = plans.map((p, i) =>
+    `${i + 1}. Rs.${p[1]} — ${p[2]}, ${p[3]}, OTT: ${p[4]}, 5G: ${p[5]}, Per day: ${p[6]}`
+  ).join("\n");
+
+  const systemPrompt = `You are ASKQA Recharge — a mobile recharge assistant for India.
+
+STRICT RULE: You ONLY answer questions about mobile recharge plans, data, validity, OTT benefits, operators (Jio, Airtel, Vi, BSNL). 
+
+If user asks ANYTHING else (weather, news, jokes, general questions) — reply ONLY:
+${language === "tamil"
+  ? "நான் மொபைல் ரீசார்ஜ் மட்டுமே உதவுவேன். ரீசார்ஜ் பற்றி கேளுங்கள்!"
+  : "I can only help with mobile recharge. Please ask about recharge plans!"}
+
+Current operator: ${operator}
+Current plans shown:
+${plansText}
+
+Recharge link: ${getRechargeLink(operator)}
+
+If user types an amount (like 299) — show that specific plan details and recharge link.
+If user asks for specific type (cheapest, Netflix, 84 days etc) — filter from the plans above and show matching ones.
+
+Reply in ${language === "tamil" ? "Tamil language" : "English"}.
+Keep replies short and clear.
+Always include recharge link.
+Never discuss anything outside mobile recharge.`;
+
+  const response = await client.messages.create({
+    model: "claude-haiku-4-5-20251001",
+    max_tokens: 500,
+    system: systemPrompt,
+    messages: [{ role: "user", content: userMessage }],
+  });
+
+  return response.content[0].text;
+}
+
+// ============================================
+// SEND TEXT MESSAGE
 // ============================================
 async function sendMessage(to, message) {
   const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
   const token = process.env.WHATSAPP_TOKEN;
-
   const response = await fetch(
     `https://graph.facebook.com/v24.0/${phoneNumberId}/messages`,
     {
@@ -208,24 +251,23 @@ async function sendMessage(to, message) {
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
       body: JSON.stringify({
         messaging_product: "whatsapp",
-        to: to,
+        to,
         type: "text",
         text: { body: message },
       }),
     }
   );
   const result = await response.json();
-  console.log("Send result:", JSON.stringify(result));
+  console.log("Send:", JSON.stringify(result));
   return result;
 }
 
 // ============================================
-// SEND LANGUAGE BUTTONS
+// SEND BUTTONS
 // ============================================
-async function sendLanguageButtons(to) {
+async function sendButtons(to, bodyText, buttons) {
   const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
   const token = process.env.WHATSAPP_TOKEN;
-
   const response = await fetch(
     `https://graph.facebook.com/v24.0/${phoneNumberId}/messages`,
     {
@@ -233,72 +275,72 @@ async function sendLanguageButtons(to) {
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
       body: JSON.stringify({
         messaging_product: "whatsapp",
-        to: to,
-        type: "interactive",
-        interactive: {
-          type: "button",
-          body: { text: "Welcome to ASKQA Recharge!\n\nSelect your language:" },
-          action: {
-            buttons: [
-              { type: "reply", reply: { id: "lang_english", title: "English" } },
-              { type: "reply", reply: { id: "lang_tamil", title: "தமிழ்" } }
-            ]
-          }
-        }
-      }),
-    }
-  );
-  const result = await response.json();
-  console.log("Language buttons result:", JSON.stringify(result));
-  return result;
-}
-
-// ============================================
-// SEND PREFERENCE BUTTONS
-// ============================================
-async function sendPreferenceButtons(to, language) {
-  const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
-  const token = process.env.WHATSAPP_TOKEN;
-
-  const bodyText = language === "tamil"
-    ? "நீங்கள் எந்த திட்டம் விரும்புகிறீர்கள்?"
-    : "What do you prefer?";
-
-  const response = await fetch(
-    `https://graph.facebook.com/v24.0/${phoneNumberId}/messages`,
-    {
-      method: "POST",
-      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        messaging_product: "whatsapp",
-        to: to,
+        to,
         type: "interactive",
         interactive: {
           type: "button",
           body: { text: bodyText },
+          action: { buttons }
+        }
+      }),
+    }
+  );
+  const result = await response.json();
+  console.log("Buttons:", JSON.stringify(result));
+  return result;
+}
+
+// ============================================
+// SEND OPERATOR LIST
+// ============================================
+async function sendOperatorList(to, language) {
+  const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
+  const token = process.env.WHATSAPP_TOKEN;
+
+  const bodyText = language === "tamil"
+    ? "உங்கள் நெட்வொர்க் தேர்ந்தெடுக்கவும்:"
+    : "Select your network:";
+
+  const response = await fetch(
+    `https://graph.facebook.com/v24.0/${phoneNumberId}/messages`,
+    {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        messaging_product: "whatsapp",
+        to,
+        type: "interactive",
+        interactive: {
+          type: "list",
+          body: { text: bodyText },
           action: {
-            buttons: [
-              { type: "reply", reply: { id: "pref_low_cost", title: language === "tamil" ? "குறைந்த விலை" : "Low Cost" } },
-              { type: "reply", reply: { id: "pref_more_data", title: language === "tamil" ? "அதிக டேட்டா" : "More Data" } },
-              { type: "reply", reply: { id: "pref_long_validity", title: language === "tamil" ? "நீண்ட காலம்" : "Long Validity" } }
-            ]
+            button: language === "tamil" ? "நெட்வொர்க் தேர்வு" : "Select Network",
+            sections: [{
+              title: language === "tamil" ? "நெட்வொர்க்" : "Network",
+              rows: [
+                { id: "op_jio", title: "Jio", description: "Reliance Jio" },
+                { id: "op_airtel", title: "Airtel", description: "Bharti Airtel" },
+                { id: "op_vi", title: "Vi", description: "Vodafone Idea" },
+                { id: "op_bsnl", title: "BSNL", description: "Bharat Sanchar Nigam" },
+              ]
+            }]
           }
         }
       }),
     }
   );
   const result = await response.json();
-  console.log("Preference buttons result:", JSON.stringify(result));
+  console.log("Operator list:", JSON.stringify(result));
   return result;
 }
 
 // ============================================
-// USER STATE MANAGEMENT
+// USER STATE
 // ============================================
 const userState = {};
 
 // ============================================
-// MAIN WEBHOOK HANDLER
+// MAIN HANDLER
 // ============================================
 module.exports = async (req, res) => {
   if (req.method === "GET") {
@@ -306,7 +348,6 @@ module.exports = async (req, res) => {
     const token = req.query["hub.verify_token"];
     const challenge = req.query["hub.challenge"];
     if (mode === "subscribe" && token === process.env.VERIFY_TOKEN) {
-      console.log("Webhook verified!");
       return res.status(200).send(challenge);
     }
     return res.status(403).send("Forbidden");
@@ -321,112 +362,130 @@ module.exports = async (req, res) => {
         for (const entry of body.entry) {
           for (const change of entry.changes) {
             const value = change.value;
+            if (!value.messages || value.messages.length === 0) continue;
 
-            if (value.messages && value.messages.length > 0) {
-              const message = value.messages[0];
-              const from = message.from;
+            const message = value.messages[0];
+            const from = message.from;
 
-              // Initialize user state
-              if (!userState[from]) {
-                userState[from] = { step: "start", language: "english" };
+            if (!userState[from]) {
+              userState[from] = { step: "start", language: "english" };
+            }
+            const state = userState[from];
+
+            // ── INTERACTIVE REPLY ──
+            if (message.type === "interactive") {
+              const interType = message.interactive.type;
+              let buttonId = "";
+
+              if (interType === "button_reply") {
+                buttonId = message.interactive.button_reply.id;
+              } else if (interType === "list_reply") {
+                buttonId = message.interactive.list_reply.id;
               }
 
-              const state = userState[from];
+              console.log(`Interactive: ${buttonId} from ${from}`);
 
-              // ── BUTTON REPLY HANDLER ──
-              if (message.type === "interactive" && message.interactive.type === "button_reply") {
-                const buttonId = message.interactive.button_reply.id;
-                console.log(`Button: ${buttonId} from ${from}`);
+              // Language selection
+              if (buttonId === "lang_english") {
+                state.language = "english";
+                state.step = "ask_operator";
+                await sendOperatorList(from, "english");
 
-                // Language selection
-                if (buttonId === "lang_english") {
-                  state.language = "english";
-                  state.step = "ask_number";
-                  await sendMessage(from, "Please enter your 10 digit mobile number:");
+              } else if (buttonId === "lang_tamil") {
+                state.language = "tamil";
+                state.step = "ask_operator";
+                await sendOperatorList(from, "tamil");
 
-                } else if (buttonId === "lang_tamil") {
-                  state.language = "tamil";
-                  state.step = "ask_number";
-                  await sendMessage(from, "உங்கள் 10 இலக்க மொபைல் நம்பரை உள்ளிடவும்:");
+              // Operator selection
+              } else if (["op_jio", "op_airtel", "op_vi", "op_bsnl"].includes(buttonId)) {
+                const opMap = { op_jio: "Jio", op_airtel: "Airtel", op_vi: "Vi", op_bsnl: "BSNL" };
+                state.operator = opMap[buttonId];
+                state.step = "ask_number";
+                const lang = state.language;
+                await sendMessage(from, lang === "tamil"
+                  ? "உங்கள் 10 இலக்க மொபைல் நம்பரை உள்ளிடவும்:"
+                  : "Enter your 10 digit mobile number:");
+              }
 
-                // Preference selection
-                } else if (buttonId === "pref_low_cost") {
-                  state.preference = "low_cost";
+            // ── TEXT MESSAGE ──
+            } else if (message.type === "text") {
+              const msgText = message.text.body.trim();
+              console.log(`Text from ${from}: ${msgText}`);
+
+              const lower = msgText.toLowerCase();
+
+              // Reset keywords
+              if (["hi", "hello", "start", "menu", "restart", "hai", "வணக்கம்"].some(k => lower.includes(k))) {
+                userState[from] = { step: "start", language: "english" };
+                await sendButtons(from, "Welcome to ASKQA Recharge!\n\nSelect your language:", [
+                  { type: "reply", reply: { id: "lang_english", title: "English" } },
+                  { type: "reply", reply: { id: "lang_tamil", title: "தமிழ்" } }
+                ]);
+                continue;
+              }
+
+              if (state.step === "start" || state.step === "language_sent") {
+                await sendButtons(from, "Welcome to ASKQA Recharge!\n\nSelect your language:", [
+                  { type: "reply", reply: { id: "lang_english", title: "English" } },
+                  { type: "reply", reply: { id: "lang_tamil", title: "தமிழ்" } }
+                ]);
+                state.step = "language_sent";
+
+              } else if (state.step === "ask_number") {
+                const mobile = msgText.replace(/\D/g, "").slice(-10);
+                if (mobile.length === 10) {
+                  state.mobile = mobile;
                   state.step = "show_plans";
-                  const plans = await getPlansFromSheet(state.operator, "low_cost");
-                  const msg = formatPlans(plans, state.operator, state.language, getRechargeLink(state.operator));
+
+                  // Get smart 5 plans
+                  const plans = await getSmartPlans(state.operator);
+                  state.currentPlans = plans;
+
+                  const msg = formatSmartPlans(plans, state.operator, state.language, getRechargeLink(state.operator));
                   await sendMessage(from, msg);
 
-                } else if (buttonId === "pref_more_data") {
-                  state.preference = "more_data";
-                  state.step = "show_plans";
-                  const plans = await getPlansFromSheet(state.operator, "more_data");
-                  const msg = formatPlans(plans, state.operator, state.language, getRechargeLink(state.operator));
-                  await sendMessage(from, msg);
-
-                } else if (buttonId === "pref_long_validity") {
-                  state.preference = "long_validity";
-                  state.step = "show_plans";
-                  const plans = await getPlansFromSheet(state.operator, "long_validity");
-                  const msg = formatPlans(plans, state.operator, state.language, getRechargeLink(state.operator));
-                  await sendMessage(from, msg);
-                }
-
-              // ── TEXT MESSAGE HANDLER ──
-              } else if (message.type === "text") {
-                const msgText = message.text.body.trim();
-                console.log(`Text from ${from}: ${msgText}`);
-
-                // Step 1 — New user — show language buttons
-                if (state.step === "start") {
-                  await sendLanguageButtons(from);
-                  state.step = "language_sent";
-
-                // Step 2 — Waiting for mobile number
-                } else if (state.step === "ask_number") {
-                  const mobile = msgText.replace(/\D/g, "").slice(-10);
-
-                  if (mobile.length === 10) {
-                    // Detect operator silently
-                    const operator = detectOperator(mobile);
-                    state.mobile = mobile;
-                    state.operator = operator;
-                    state.step = "ask_preference";
-
-                    // Show preference buttons
-                    await sendPreferenceButtons(from, state.language);
-
-                  } else {
-                    // Invalid number
-                    if (state.language === "tamil") {
-                      await sendMessage(from, "சரியான 10 இலக்க மொபைல் நம்பரை உள்ளிடவும்.");
-                    } else {
-                      await sendMessage(from, "Please enter a valid 10 digit mobile number.");
-                    }
-                  }
-
-                // Step 3 — After plans shown — handle follow up
-                } else if (state.step === "show_plans") {
-                  const lower = msgText.toLowerCase();
-
-                  // Reset conversation
-                  if (lower.includes("hi") || lower.includes("hello") || lower.includes("start") || lower.includes("menu")) {
-                    userState[from] = { step: "start", language: "english" };
-                    await sendLanguageButtons(from);
-
-                  } else if (lower.includes("more") || lower.includes("other") || lower.includes("different")) {
-                    await sendPreferenceButtons(from, state.language);
-
-                  } else {
-                    // Any other message — show preference buttons again
-                    await sendPreferenceButtons(from, state.language);
-                  }
-
-                // Default — any other state — restart
                 } else {
-                  userState[from] = { step: "start", language: "english" };
-                  await sendLanguageButtons(from);
+                  await sendMessage(from, state.language === "tamil"
+                    ? "சரியான 10 இலக்க மொபைல் நம்பரை உள்ளிடவும்."
+                    : "Please enter a valid 10 digit mobile number.");
                 }
+
+              } else if (state.step === "show_plans") {
+                // Check if user typed an amount
+                const amountMatch = msgText.match(/^\d+$/);
+
+                if (amountMatch) {
+                  // User typed specific amount
+                  const amount = parseInt(amountMatch[0]);
+                  const link = getRechargeLink(state.operator);
+
+                  if (state.language === "tamil") {
+                    await sendMessage(from,
+                      `Rs.${amount} ${state.operator} ரீசார்ஜ்!\n\nரீசார்ஜ் செய்ய இந்த லிங்கை க்ளிக் செய்யுங்கள்:\n${link}\n\nவேறு திட்டம் வேண்டுமா? அந்த தொகையை சொல்லுங்கள்.`
+                    );
+                  } else {
+                    await sendMessage(from,
+                      `Rs.${amount} ${state.operator} recharge!\n\nClick to recharge:\n${link}\n\nNeed another plan? Just type the amount.`
+                    );
+                  }
+
+                } else {
+                  // Natural language — send to Claude
+                  const aiReply = await getClaudeResponse(
+                    msgText,
+                    state.operator,
+                    state.language,
+                    state.currentPlans || []
+                  );
+                  await sendMessage(from, aiReply);
+                }
+
+              } else {
+                userState[from] = { step: "start", language: "english" };
+                await sendButtons(from, "Welcome to ASKQA Recharge!\n\nSelect your language:", [
+                  { type: "reply", reply: { id: "lang_english", title: "English" } },
+                  { type: "reply", reply: { id: "lang_tamil", title: "தமிழ்" } }
+                ]);
               }
             }
           }
