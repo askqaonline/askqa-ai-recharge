@@ -120,8 +120,7 @@ async function getSmartPlans(operator) {
     // Plan 5 — Long validity better data (180+ days)
     pickBest((a, b) => getPricePerDay(a) - getPricePerDay(b), p => getDays(p) >= 180 && hasData(p));
 
-    // Plan 6 — Operator special — cheapest per day with data (any validity)
-    pickBest((a, b) => getPricePerDay(a) - getPricePerDay(b), p => hasData(p));
+
 
     return selected;
   } catch (error) {
@@ -140,78 +139,47 @@ function formatSmartPlans(plans, operator, language, rechargeLink) {
       : `Sorry. ${operator} plans not available now.`;
   }
 
-  const specialLabel = {
-    "Jio": { en: "Jio Special (AI+5G)", ta: "ஜியோ ஸ்பெஷல் (AI+5G)" },
-    "Airtel": { en: "Airtel Special (Thanks)", ta: "ஏர்டெல் ஸ்பெஷல் (Thanks)" },
-    "Vi": { en: "Vi Special (Weekend Data)", ta: "வி ஸ்பெஷல் (வீக்எண்ட்)" },
-    "BSNL": { en: "BSNL Special (Best Value)", ta: "பிஎஸ்என்எல் ஸ்பெஷல்" },
-  };
-  const sp = specialLabel[operator] || { en: "Best Value", ta: "சிறந்த மதிப்பு" };
-  const labels = {
-    english: ["Budget Pick", "Daily Data", "More Data", "3 Month Plan", "Long Term", sp.en],
-    tamil: ["மலிவான திட்டம்", "தினசரி டேட்டா", "அதிக டேட்டா", "3 மாத திட்டம்", "நீண்ட காலம்", sp.ta]
-  };
-
-  const lang = language === "tamil" ? "tamil" : "english";
+  const emojis = ["1️⃣","2️⃣","3️⃣","4️⃣","5️⃣"];
   let msg = language === "tamil"
-    ? `*${operator} சிறந்த திட்டங்கள்:*\n\n`
-    : `*Best ${operator} Plans:*\n\n`;
+    ? `*${operator} திட்டங்கள்:*\n\n`
+    : `*${operator} Plans:*\n\n`;
 
   plans.forEach((plan, i) => {
     const price = plan[1] || "";
     const data = plan[2] || "";
     const validity = plan[3] || "";
-    const benefits = plan[4] || "";
-    const is5g = plan[5] || "";
     const pricePerDay = plan[6] || "";
 
-    // Format data label
+    // Compact data label
     let dataLabel = data;
     if (language === "tamil") {
-      if (data.includes("/day")) {
-        dataLabel = data.replace("/day", " ஒரு நாளைக்கு");
-      } else if (data.includes("total")) {
-        dataLabel = data.replace("total", "மொத்தமும்");
-      } else if (data.toLowerCase().includes("unlimited")) {
-        dataLabel = "அளவற்ட டேட்டா";
-      } else if (!data || data.trim() === "") {
-        dataLabel = "அழைப்பு மட்டும்";
-      }
+      if (data.includes("/day")) dataLabel = data.replace("/day", "/நாள்");
+      else if (data.includes("total")) dataLabel = data.replace(" total", "");
+      else if (data.toLowerCase().includes("unlimited")) dataLabel = "அளவற்றது";
+      else if (!data || data.trim() === "") dataLabel = "அழைப்பு மட்டும்";
     } else {
-      if (!data || data.trim() === "") {
-        dataLabel = "Calls only";
-      }
+      if (data.includes("total")) dataLabel = data.replace(" total", "");
+      else if (!data || data.trim() === "") dataLabel = "Calls only";
     }
 
-    // Format validity in Tamil
-    let validityLabel = validity;
-    if (language === "tamil") {
-      validityLabel = validity
-        .replace("Days", "நாட்கள்")
-        .replace("Day", "நாள்")
-        .replace("days", "நாட்கள்")
-        .replace("day", "நாள்")
-        .replace("Month", "மாதம்")
-        .replace("months", "மாதங்கள்")
-        .replace("Hour", "மணி நேரம்")
-        .replace("hours", "மணி நேரம்");
-    }
+    // Compact validity
+    let validityLabel = validity
+      .replace(" Days", language === "tamil" ? "நாள்" : "d")
+      .replace(" Day", language === "tamil" ? "நாள்" : "d")
+      .replace(" days", language === "tamil" ? "நாள்" : "d")
+      .replace(" day", language === "tamil" ? "நாள்" : "d")
+      .replace("Calendar Month", language === "tamil" ? "1மாதம்" : "1Mo");
 
-    const label = labels[lang][i] || "";
+    // Compact price per day
+    const ppd = pricePerDay ? pricePerDay.replace("Rs.", "₹") + "/நாள்" : "";
 
-    msg += `${i + 1}. *Rs.${price}* — ${dataLabel} | ${validityLabel}\n`;
-    if (benefits && benefits !== "No OTT" && benefits !== "") msg += `   OTT: ${benefits}\n`;
-    if (is5g === "Yes") msg += `   5G: ${language === "tamil" ? "உண்டு ✓" : "Yes ✓"}\n`;
-    if (pricePerDay) msg += `   ${language === "tamil" ? "நாளுக்கு" : "Per day"}: ${pricePerDay}\n`;
-    msg += "\n";
+    msg += `${emojis[i]} | ₹${price} | ${dataLabel} | ${validityLabel} | ${ppd}\n`;
   });
 
   if (language === "tamil") {
-    msg += `ரீசார்ஜ் செய்ய: ${rechargeLink}\n\n`;
-    msg += `உங்களுக்கு பிடித்த திட்டத்தின் தொகையை தட்டச்சு செய்யுங்கள்.\nஉதாரணம்: 299\n\nஅல்லது உங்களுக்கு என்ன மாதிரி ரீசார்ஜ் வேண்டும் என்று சொன்னால் நான் காண்பிப்பேன்!`;
+    msg += `\nஎந்த திட்டம் வேண்டும்? சொல்லுங்கள் 😊 வேறு எதாவது தேவையா? கேளுங்கள்!`;
   } else {
-    msg += `Recharge at: ${rechargeLink}\n\n`;
-    msg += `Type the amount you want.\nExample: 299\n\nOr tell me what kind of plan you need and I will find it!`;
+    msg += `\nWhich plan do you want? Just tell us 😊 Need something else? Ask us!`;
   }
 
   return msg;
