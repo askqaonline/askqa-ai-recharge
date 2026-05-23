@@ -317,7 +317,12 @@ async function sendOperatorList(to, language) {
             button: language === "tamil" ? "நெட்வொர்க் தேர்வு" : "Select Network",
             sections: [{
               title: language === "tamil" ? "நெட்வொர்க்" : "Network",
-              rows: [
+              rows: language === "tamil" ? [
+                { id: "op_jio", title: "ஜியோ (Jio)", description: "ரிலையன்ஸ் ஜியோ" },
+                { id: "op_airtel", title: "ஏர்டெல் (Airtel)", description: "பாரதி ஏர்டெல்" },
+                { id: "op_vi", title: "வி (Vi)", description: "வோடஃபோன் ஐடியா" },
+                { id: "op_bsnl", title: "பிஎஸ்என்எல் (BSNL)", description: "பாரத் சஞ்சார் நிகம்" },
+              ] : [
                 { id: "op_jio", title: "Jio", description: "Reliance Jio" },
                 { id: "op_airtel", title: "Airtel", description: "Bharti Airtel" },
                 { id: "op_vi", title: "Vi", description: "Vodafone Idea" },
