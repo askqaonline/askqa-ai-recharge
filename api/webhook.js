@@ -176,9 +176,7 @@ function formatSmartPlans(plans, operator, language, rechargeLink) {
 
     const label = labels[lang][i] || "";
 
-    const planLabel = labels[lang][i] || "";
     msg += `${i + 1}. *Rs.${price}* — ${dataLabel} | ${validity}\n`;
-    if (planLabel) msg += `   _(${planLabel})_\n`;
     if (benefits && benefits !== "No OTT" && benefits !== "") msg += `   OTT: ${benefits}\n`;
     if (is5g === "Yes") msg += `   5G: ${language === "tamil" ? "உண்டு ✓" : "Yes ✓"}\n`;
     if (pricePerDay) msg += `   ${language === "tamil" ? "நாளுக்கு" : "Per day"}: ${pricePerDay}\n`;
