@@ -65,14 +65,12 @@ async function getSmartPlans(operator) {
     const rows = await readSheet(token, sheetId, "Plans!A1:I500");
     if (rows.length < 2) return [];
 
-    // Filter by operator
     let plans = rows.slice(1).filter(row =>
       row[0] && row[0].toLowerCase() === operator.toLowerCase()
     );
 
     if (plans.length === 0) return [];
 
-    // Helper functions
     const getPrice = p => parseFloat(p[1]) || 999999;
     const getPricePerDay = p => parseFloat((p[6] || "").replace("Rs.", "")) || 999999;
     const getDataVal = p => {
@@ -85,10 +83,11 @@ async function getSmartPlans(operator) {
       const match = str.match(/\d+/);
       return match ? parseInt(match[0]) : 0;
     };
-    const hasOTT = p => p[4] && p[4] !== "No OTT" && p[4] !== "";
-    const isDaily = p => (p[2] || "").includes("/day") || (p[2] || "").toLowerCase().includes("day");
+    const hasData = p => p[2] && p[2] !== "" && p[2] !== "Calls only";
 
-    // Pick 5 smart plans — one from each category
+    // FIX 3 — isDaily must be TRUE for plan to qualify — no total data plans
+    const isDaily = p => (p[2] || "").toLowerCase().includes("/day");
+
     const selected = [];
     const usedPrices = new Set();
 
@@ -102,25 +101,25 @@ async function getSmartPlans(operator) {
       }
     };
 
-    // hasData — only plans with actual data
-    const hasData = p => p[2] && p[2] !== "" && p[2] !== "Calls only";
+    // Plan 1 — Cheapest DAILY data plan (28-35 days) — NO total data plans
+    pickBest((a, b) => getPrice(a) - getPrice(b),
+      p => isDaily(p) && getDays(p) >= 28 && getDays(p) <= 35);
 
-    // Plan 1 — Cheapest with data (28-30 days)
-    pickBest((a, b) => getPrice(a) - getPrice(b), p => getDays(p) >= 28 && getDays(p) <= 35 && hasData(p));
+    // Plan 2 — Cheapest daily data plan (28-35 days) different price
+    pickBest((a, b) => getPrice(a) - getPrice(b),
+      p => isDaily(p) && getDays(p) >= 28 && getDays(p) <= 35);
 
-    // Plan 2 — Cheapest daily data plan (28-30 days)
-    pickBest((a, b) => getPrice(a) - getPrice(b), p => isDaily(p) && getDays(p) >= 28 && getDays(p) <= 35 && hasData(p));
+    // Plan 3 — Better daily data (28-35 days, more GB/day)
+    pickBest((a, b) => getDataVal(b) - getDataVal(a),
+      p => isDaily(p) && getDays(p) >= 28 && getDays(p) <= 35);
 
-    // Plan 3 — Better daily data (28-30 days, more GB/day)
-    pickBest((a, b) => getDataVal(b) - getDataVal(a), p => isDaily(p) && getDays(p) >= 28 && getDays(p) <= 35 && hasData(p));
+    // Plan 4 — Long validity daily data (84-95 days), cheapest per day
+    pickBest((a, b) => getPricePerDay(a) - getPricePerDay(b),
+      p => isDaily(p) && getDays(p) >= 84 && getDays(p) <= 95);
 
-    // Plan 4 — Long validity with data (84-90 days), cheapest per day
-    pickBest((a, b) => getPricePerDay(a) - getPricePerDay(b), p => getDays(p) >= 84 && getDays(p) <= 95 && hasData(p));
-
-    // Plan 5 — Long validity better data (180+ days)
-    pickBest((a, b) => getPricePerDay(a) - getPricePerDay(b), p => getDays(p) >= 180 && hasData(p));
-
-
+    // Plan 5 — Long validity daily data (180+ days)
+    pickBest((a, b) => getPricePerDay(a) - getPricePerDay(b),
+      p => isDaily(p) && getDays(p) >= 180);
 
     return selected;
   } catch (error) {
@@ -130,7 +129,9 @@ async function getSmartPlans(operator) {
 }
 
 // ============================================
-// FORMAT SMART 5 PLANS
+// FORMAT SMART 5 PLANS — STYLE 3
+// FIX 1 — 2 lines per plan
+// FIX 2 — Show ₹/நாள் on second line with 💰
 // ============================================
 function formatSmartPlans(plans, operator, language, rechargeLink) {
   if (plans.length === 0) {
@@ -150,19 +151,17 @@ function formatSmartPlans(plans, operator, language, rechargeLink) {
     const validity = plan[3] || "";
     const pricePerDay = plan[6] || "";
 
-    // Compact data label
+    // Format data label
     let dataLabel = data;
     if (language === "tamil") {
       if (data.includes("/day")) dataLabel = data.replace("/day", "/நாள்");
-      else if (data.includes("total")) dataLabel = data.replace(" total", "");
       else if (data.toLowerCase().includes("unlimited")) dataLabel = "அளவற்றது";
       else if (!data || data.trim() === "") dataLabel = "அழைப்பு மட்டும்";
     } else {
-      if (data.includes("total")) dataLabel = data.replace(" total", "");
-      else if (!data || data.trim() === "") dataLabel = "Calls only";
+      if (!data || data.trim() === "") dataLabel = "Calls only";
     }
 
-    // Compact validity
+    // Format validity label
     let validityLabel = validity
       .replace(" Days", language === "tamil" ? "நாள்" : "d")
       .replace(" Day", language === "tamil" ? "நாள்" : "d")
@@ -170,16 +169,23 @@ function formatSmartPlans(plans, operator, language, rechargeLink) {
       .replace(" day", language === "tamil" ? "நாள்" : "d")
       .replace("Calendar Month", language === "tamil" ? "1மாதம்" : "1Mo");
 
-    // Compact price per day
-    const ppd = pricePerDay ? pricePerDay.replace("Rs.", "₹") + "/நாள்" : "";
+    // Format per day price
+    const ppd = pricePerDay ? pricePerDay.replace("Rs.", "₹") : "";
 
-    msg += `${emojis[i]} | ₹${price} | ${dataLabel} | ${validityLabel} | ${ppd}\n`;
+    // FIX 1 & 2 — Style 3: line 1 = plan, line 2 = 💰 per day
+    msg += `${emojis[i]} *₹${price}* — ${dataLabel} | ${validityLabel}\n`;
+    if (ppd) {
+      msg += language === "tamil"
+        ? `    💰 ${ppd}/நாள்\n`
+        : `    💰 ${ppd}/day\n`;
+    }
+    msg += "\n";
   });
 
   if (language === "tamil") {
-    msg += `\nஎந்த திட்டம் வேண்டும்? சொல்லுங்கள் 😊 வேறு எதாவது தேவையா? கேளுங்கள்!`;
+    msg += `எந்த திட்டம் வேண்டும்? சொல்லுங்கள் 😊\nவேறு எதாவது தேவையா? கேளுங்கள்!`;
   } else {
-    msg += `\nWhich plan do you want? Just tell us 😊 Need something else? Ask us!`;
+    msg += `Which plan do you want? Just tell us 😊\nNeed something else? Ask us!`;
   }
 
   return msg;
@@ -208,7 +214,7 @@ async function getClaudeResponse(userMessage, operator, language, plans) {
 
   const systemPrompt = `You are ASKQA Recharge — a mobile recharge assistant for India.
 
-STRICT RULE: You ONLY answer questions about mobile recharge plans, data, validity, OTT benefits, operators (Jio, Airtel, Vi, BSNL). 
+STRICT RULE: You ONLY answer questions about mobile recharge plans, data, validity, OTT benefits, operators (Jio, Airtel, Vi, BSNL).
 
 If user asks ANYTHING else (weather, news, jokes, general questions) — reply ONLY:
 ${language === "tamil"
@@ -391,7 +397,6 @@ module.exports = async (req, res) => {
 
               console.log(`Interactive: ${buttonId} from ${from}`);
 
-              // Language selection
               if (buttonId === "lang_english") {
                 state.language = "english";
                 state.step = "ask_operator";
@@ -402,7 +407,6 @@ module.exports = async (req, res) => {
                 state.step = "ask_operator";
                 await sendOperatorList(from, "tamil");
 
-              // Operator selection
               } else if (["op_jio", "op_airtel", "op_vi", "op_bsnl"].includes(buttonId)) {
                 const opMap = { op_jio: "Jio", op_airtel: "Airtel", op_vi: "Vi", op_bsnl: "BSNL" };
                 state.operator = opMap[buttonId];
@@ -420,7 +424,6 @@ module.exports = async (req, res) => {
 
               const lower = msgText.toLowerCase();
 
-              // Reset keywords
               if (["hi", "hello", "start", "menu", "restart", "hai", "வணக்கம்"].some(k => lower.includes(k))) {
                 userState[from] = { step: "start", language: "english" };
                 await sendButtons(from, "Welcome to ASKQA Recharge!\n\nSelect your language:", [
@@ -443,7 +446,6 @@ module.exports = async (req, res) => {
                   state.mobile = mobile;
                   state.step = "show_plans";
 
-                  // Get smart 5 plans
                   const plans = await getSmartPlans(state.operator);
                   state.currentPlans = plans;
 
@@ -457,11 +459,9 @@ module.exports = async (req, res) => {
                 }
 
               } else if (state.step === "show_plans") {
-                // Check if user typed an amount
                 const amountMatch = msgText.match(/^\d+$/);
 
                 if (amountMatch) {
-                  // User typed specific amount
                   const amount = parseInt(amountMatch[0]);
                   const link = getRechargeLink(state.operator);
 
@@ -476,7 +476,6 @@ module.exports = async (req, res) => {
                   }
 
                 } else {
-                  // Natural language — send to Claude
                   const aiReply = await getClaudeResponse(
                     msgText,
                     state.operator,
