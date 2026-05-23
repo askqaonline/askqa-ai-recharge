@@ -102,20 +102,20 @@ async function getSmartPlans(operator) {
       }
     };
 
-    // 1. Cheapest price
-    pickBest((a, b) => getPrice(a) - getPrice(b));
+    // 1. Cheapest price — minimum 28 days validity
+    pickBest((a, b) => getPrice(a) - getPrice(b), p => getDays(p) >= 28);
 
-    // 2. Best daily data (daily plans only)
-    pickBest((a, b) => getDataVal(b) - getDataVal(a), p => isDaily(p));
+    // 2. Best daily data (daily plans only, min 28 days)
+    pickBest((a, b) => getDataVal(b) - getDataVal(a), p => isDaily(p) && getDays(p) >= 28);
 
-    // 3. Best value — cheapest per day
-    pickBest((a, b) => getPricePerDay(a) - getPricePerDay(b));
+    // 3. Best value — cheapest per day (min 28 days)
+    pickBest((a, b) => getPricePerDay(a) - getPricePerDay(b), p => getDays(p) >= 28);
 
     // 4. Longest validity
     pickBest((a, b) => getDays(b) - getDays(a));
 
-    // 5. Best OTT plan
-    pickBest((a, b) => getPrice(a) - getPrice(b), p => hasOTT(p));
+    // 5. Best OTT plan (min 28 days)
+    pickBest((a, b) => getPrice(a) - getPrice(b), p => hasOTT(p) && getDays(p) >= 28);
 
     return selected;
   } catch (error) {
@@ -317,7 +317,12 @@ async function sendOperatorList(to, language) {
             button: language === "tamil" ? "நெட்வொர்க் தேர்வு" : "Select Network",
             sections: [{
               title: language === "tamil" ? "நெட்வொர்க்" : "Network",
-              rows: [
+              rows: language === "tamil" ? [
+                { id: "op_jio", title: "ஜியோ (Jio)", description: "ரிலையன்ஸ் ஜியோ" },
+                { id: "op_airtel", title: "ஏர்டெல் (Airtel)", description: "பாரதி ஏர்டெல்" },
+                { id: "op_vi", title: "வி (Vi)", description: "வோடஃபோன் ஐடியா" },
+                { id: "op_bsnl", title: "பிஎஸ்என்எல் (BSNL)", description: "பாரத் சஞ்சார் நிகம்" },
+              ] : [
                 { id: "op_jio", title: "Jio", description: "Reliance Jio" },
                 { id: "op_airtel", title: "Airtel", description: "Bharti Airtel" },
                 { id: "op_vi", title: "Vi", description: "Vodafone Idea" },
