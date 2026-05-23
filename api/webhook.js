@@ -102,23 +102,26 @@ async function getSmartPlans(operator) {
       }
     };
 
-    // Plan 1 — Cheapest total price (28-30 days)
-    pickBest((a, b) => getPrice(a) - getPrice(b), p => getDays(p) >= 28 && getDays(p) <= 35);
+    // hasData — only plans with actual data
+    const hasData = p => p[2] && p[2] !== "" && p[2] !== "Calls only";
+
+    // Plan 1 — Cheapest with data (28-30 days)
+    pickBest((a, b) => getPrice(a) - getPrice(b), p => getDays(p) >= 28 && getDays(p) <= 35 && hasData(p));
 
     // Plan 2 — Cheapest daily data plan (28-30 days)
-    pickBest((a, b) => getPrice(a) - getPrice(b), p => isDaily(p) && getDays(p) >= 28 && getDays(p) <= 35);
+    pickBest((a, b) => getPrice(a) - getPrice(b), p => isDaily(p) && getDays(p) >= 28 && getDays(p) <= 35 && hasData(p));
 
-    // Plan 3 — Better daily data than plan 2 (28-30 days, more data)
-    pickBest((a, b) => getDataVal(b) - getDataVal(a), p => isDaily(p) && getDays(p) >= 28 && getDays(p) <= 35);
+    // Plan 3 — Better daily data (28-30 days, more GB/day)
+    pickBest((a, b) => getDataVal(b) - getDataVal(a), p => isDaily(p) && getDays(p) >= 28 && getDays(p) <= 35 && hasData(p));
 
-    // Plan 4 — Long validity light data (84-90 days), cheapest per day
-    pickBest((a, b) => getPricePerDay(a) - getPricePerDay(b), p => getDays(p) >= 84 && getDays(p) <= 95);
+    // Plan 4 — Long validity with data (84-90 days), cheapest per day
+    pickBest((a, b) => getPricePerDay(a) - getPricePerDay(b), p => getDays(p) >= 84 && getDays(p) <= 95 && hasData(p));
 
     // Plan 5 — Long validity better data (180+ days)
-    pickBest((a, b) => getPricePerDay(a) - getPricePerDay(b), p => getDays(p) >= 180);
+    pickBest((a, b) => getPricePerDay(a) - getPricePerDay(b), p => getDays(p) >= 180 && hasData(p));
 
-    // Plan 6 — Operator special — cheapest per day overall (any validity)
-    pickBest((a, b) => getPricePerDay(a) - getPricePerDay(b));
+    // Plan 6 — Operator special — cheapest per day with data (any validity)
+    pickBest((a, b) => getPricePerDay(a) - getPricePerDay(b), p => hasData(p));
 
     return selected;
   } catch (error) {
@@ -170,13 +173,33 @@ function formatSmartPlans(plans, operator, language, rechargeLink) {
       } else if (data.includes("total")) {
         dataLabel = data.replace("total", "மொத்தமும்");
       } else if (data.toLowerCase().includes("unlimited")) {
-        dataLabel = "அளவற்ற டேட்டா";
+        dataLabel = "அளவற்ட டேட்டா";
+      } else if (!data || data.trim() === "") {
+        dataLabel = "அழைப்பு மட்டும்";
       }
+    } else {
+      if (!data || data.trim() === "") {
+        dataLabel = "Calls only";
+      }
+    }
+
+    // Format validity in Tamil
+    let validityLabel = validity;
+    if (language === "tamil") {
+      validityLabel = validity
+        .replace("Days", "நாட்கள்")
+        .replace("Day", "நாள்")
+        .replace("days", "நாட்கள்")
+        .replace("day", "நாள்")
+        .replace("Month", "மாதம்")
+        .replace("months", "மாதங்கள்")
+        .replace("Hour", "மணி நேரம்")
+        .replace("hours", "மணி நேரம்");
     }
 
     const label = labels[lang][i] || "";
 
-    msg += `${i + 1}. *Rs.${price}* — ${dataLabel} | ${validity}\n`;
+    msg += `${i + 1}. *Rs.${price}* — ${dataLabel} | ${validityLabel}\n`;
     if (benefits && benefits !== "No OTT" && benefits !== "") msg += `   OTT: ${benefits}\n`;
     if (is5g === "Yes") msg += `   5G: ${language === "tamil" ? "உண்டு ✓" : "Yes ✓"}\n`;
     if (pricePerDay) msg += `   ${language === "tamil" ? "நாளுக்கு" : "Per day"}: ${pricePerDay}\n`;
